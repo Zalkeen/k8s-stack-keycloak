@@ -1,0 +1,152 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: keycloak-db
+  namespace: namespace-name
+spec:
+  selector:
+    matchLabels:
+      service: keycloak-db
+  template:
+    metadata:
+      labels:
+        service: keycloak-db
+    spec:
+      nodeSelector:
+        storageaccess: direct
+      volumes:
+      - name: keycloak-db
+        hostPath:
+          path: "/cluster/namespace-name/keycloak/db"
+          type: "DirectoryOrCreate"
+      containers:
+        - name: "keycloak-db"
+          image: "postgres:10-alpine"
+          env:
+          - name: POSTGRES_DATABASE
+            value: keycloak
+          - name: POSTGRES_USER
+            value: keycloak
+          - name: POSTGRES_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: keycloak-secrets
+                key: dbpwroot
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: keycloak-secrets
+                key: dbpw
+          volumeMounts:
+          - mountPath: "/var/lib/postgresql/data"
+            name: keycloak-db
+
+---
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: keycloak
+  namespace: namespace-name
+spec:
+  selector:
+    matchLabels:
+      service: keycloak
+  template:
+    metadata:
+      labels:
+        service: keycloak
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: performance
+                operator: In
+                values:
+                - high
+      containers:
+        - name: "keycloak"
+          image: "jboss/keycloak:9.0.2"
+          args:
+          - -b 0.0.0.0
+          - -Dkeycloak.profile.feature.docker=enabled
+          env:
+          - name: KEYCLOAK_LOGLEVEL
+            value: ALL
+          - name: PROXY_ADDRESS_FORWARDING
+            value: 'true'
+          - name: KEYCLOAK_USER
+            value: administrator
+          - name: KEYCLOAK_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: keycloak-secrets
+                key: adminpw
+          - name: DB_VENDOR
+            value: postgres
+          - name: DB_ADDR
+            value: keycloak-db
+          - name: DB_USER
+            value: keycloak
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: keycloak-secrets
+                key: dbpw
+          ports:
+          - name: http
+            containerPort: 8080
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: keycloak-db
+  namespace: namespace-name
+spec:
+  selector:
+    service: keycloak-db
+  ports:
+  - protocol: TCP
+    port: 5432
+    name: db
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: keycloak
+  namespace: namespace-name
+spec:
+  selector:
+    service: keycloak
+  ports:
+  - protocol: TCP
+    port: 8080
+    name: http
+
+---
+
+kind: Ingress
+apiVersion: networking.k8s.io/v1beta1
+metadata:
+  name: keycloak
+  namespace: namespace-name
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.frontend.passHostHeader: "false"
+spec:
+  rules:
+  - host: keycloak.domain.tld
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: keycloak
+          servicePort: http
+
